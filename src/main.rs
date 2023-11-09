@@ -1,11 +1,16 @@
-use log::{debug, info};
+use log::{debug, error};
+
 use std::{
     fs,
-    io::{prelude::*, BufReader},
     net::{TcpListener, TcpStream},
 };
 
-use web_server::ThreadPool;
+use web_server::{
+    http_request::HttpMethod,
+    http_response::{HttpResponse, HttpStatus},
+    server::parse_request,
+    ThreadPool,
+};
 
 const ADDRESS: &str = "localhost";
 const PORT: &str = "7878";
@@ -25,19 +30,32 @@ fn main() {
     }
 }
 
-fn handle_connection(mut stream: TcpStream) {
-    let buf_reader = BufReader::new(&mut stream);
-    let request_line = buf_reader.lines().next().unwrap().unwrap();
+fn handle_connection(stream: TcpStream) {
+    let request = parse_request(&stream);
 
-    let (status_line, filename) = match &request_line[..] {
-        "GET / HTTP/1.1" => ("HTTP/1.1 200 OK", HELLO_PAGE),
-        _ => ("HTTP/1.1 404 NOT FOUND", NOT_FOUND_PAGE),
+    if let Err(e) = request {
+        error!("Request parse failed with {e}");
+        return;
+    }
+
+    let request = request.unwrap();
+    debug!("received: {:?}", request);
+
+    let (filename, status) = match (request.method, request.path.as_str()) {
+        (HttpMethod::Get, "/") => (HELLO_PAGE, HttpStatus::Ok),
+        _ => (NOT_FOUND_PAGE, HttpStatus::NotFound),
     };
 
-    let contents = fs::read_to_string(filename).unwrap();
-    let length = contents.len();
+    let data = fs::read_to_string(filename);
 
-    let response = format!("{status_line}\r\nContent-Length: {length}\r\n\r\n{contents}");
+    if let Err(e) = data {
+        error!("Failed to read data: {e}");
+        return;
+    }
 
-    stream.write_all(response.as_bytes()).unwrap();
+    let response = HttpResponse::from_html(status, request.protocol, data.unwrap());
+
+    if let Err(e) = response.write(&stream) {
+        error!("Failed to send response: {e}");
+    }
 }
